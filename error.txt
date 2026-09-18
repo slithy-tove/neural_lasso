@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/elias/Research/Krishnaswamy/neural_lasso/models/neural_lasso/checks/check_calc_grad.py", line 36, in <module>
+    print(f"Analytical grad: {grads[OBS_IDX, FEAT_IDX].item():.6f}, Finite diff approx: {approx_grad.item():.6f}")
+                              ~~~~~^^^^^^^^^^^^^^^^^^^
+TypeError: tuple indices must be integers or slices, not tuple

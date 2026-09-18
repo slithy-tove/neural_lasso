@@ -15,6 +15,7 @@ class NeuralLasso(MLP):
         self.is_refit = False
         self.use_reg = True
         self.refit_bottleneck_weight = nn.Linear(self.sparsity, self.sparsity)
+        self.spectrum_history = []
 
     def forward(self, X):
         """
@@ -37,6 +38,19 @@ class NeuralLasso(MLP):
             reg = grad.norm(dim=0, p=2).sum() / math.sqrt(n_obs)
         return self.lambda_reg * reg
 
+    def get_grad_spectrum(self, X):
+        """
+        If the gradients on the output of the bottleneck neurons from data point $x^{(\ell)}$ is $h^{(\ell)}$, this return the eigenvalues of the matrix
+        $$
+        A = \sum_{\ell}h^{(\ell)}(h^{(\ell)})^{T}
+        $$
+        """
+        X_b = self.bottleneck_weight(X) # (n_obs, sparsity)
+        grads = calc_grads(self.mlp, X_b).detach().numpy() # (n_obs, sparsity)
+        A = np.einsum("ni,nj->nj", grads, grads) # (sparsity, sparsity)
+        eigvals = np.linalg.eigvalsh(A)  # sorted ascending
+        return eigvals
+
     def fit(self, **kwargs):
         """
         Fit model to some data.
@@ -53,14 +67,19 @@ class NeuralLasso(MLP):
             print(f"Training with lambda={lam}")
             self.lambda_reg = lam
             MLP.fit(self, **kwargs)
-            # calculate gradients on the entire dataset
+            # record input feature gradients
             grad = calc_grad(self, self.X_tensor)  # (n_obs, input_dim)
             weights = grad.abs().mean(dim = 0).detach().numpy() # (input_dim,)
             self.weight_history.append(weights) 
+            # record input feature bottleneck weights
             self.bottleneck_history.append(self.bottleneck_weight.weight.abs().mean(axis=0).detach().numpy())  # (input_dim,)
+            # record spectrum of gradient matrix 
+            eigs = self.get_grad_spectrum(self.X_tensor) # (sparsity,)
+            self.spectrum_history.append(eigs)
             
         self.weight_history = np.array(self.weight_history)
         self.bottleneck_history = np.array(self.bottleneck_history)
+        self.spectrum_history = np.array(self.spectrum_history)
 
         # PART 2: Refit to the smallest lambda which attained the desired sparsity
         thresh = 1e-3
@@ -106,7 +125,21 @@ class NeuralLasso(MLP):
         fig.update_layout(title_text="Average Gradient Magnitudes for Selected Features")
         self.save_fig(fig=fig, name="weights")
 
+    def plot_spectrum(self):
+        # plot a line plot of how each ordered eigenvalue of the matrix evolves over training
+        fig = go.Figure()
+        for i in range(self.sparsity):
+            fig.add_trace(go.Scatter(x=self.lambda_vals,
+                                     y=self.spectrum_history[:, i],
+                                     mode="lines",
+                                     name=f"Eigenvalue {i+1}"))
+        fig.update_xaxes(title_text="Lambda")
+        fig.update_yaxes(title_text="Eigenvalue")
+        fig.update_layout(title_text="Gradient Spectrum Evolution Over Lambda Sweep")
+        self.save_fig(fig=fig, name="spectrum")
+
     def visualize(self):
         super().visualize()
         self.plot_traces()
         self.plot_weights()
+        self.plot_spectrum()

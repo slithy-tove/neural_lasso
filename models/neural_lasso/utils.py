@@ -13,3 +13,4 @@ def calc_grad(model, X):
 def reset_parameters(m):
     if hasattr(m, 'reset_parameters'):
         m.reset_parameters()
+

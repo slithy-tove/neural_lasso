@@ -40,7 +40,8 @@ def fit_models(**kwargs):
     Fit a range of models over a range of different datasets, with a range of hyperparameter combinations. Each keyword argument in kwargs should be a list of possible values (even if just a list of length 1).
     """
     for combo in make_iter(**kwargs):
-        print(f"Running: {tuple(f"{k} = {combo[k]}" for k in combo.keys())}")
+        combo_str = ", ".join([f"{k} = {combo[k]}" for k in combo.keys()])
+        print("Running:", combo_str)
         start = time()
         fit_model(**combo)
         end = time()

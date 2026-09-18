@@ -1,102 +1,112 @@
 import torch
 import torch.nn as nn
 import torch.utils.data as data
-import plotly.express as px
-from models import SparseEstimator
+import numpy as np
+import math
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from models import MLP
 from data import load_data
+from .utils import calc_grad, reset_parameters
 
-class NeuralLasso(SparseEstimator, nn.Module):
+class NeuralLasso(MLP):
     def __init__(self, **kwargs):
-        nn.Module.__init__(self)
-        SparseEstimator.__init__(self)
-
-        self.update_header(**kwargs)
-        dataset_name, sparsity, hdim, hnum = kwargs["dataset_name"], kwargs["sparsity"], kwargs["hdim"], kwargs["hnum"]
-
-        self.dataset = load_data(dataset_name)
-        self.input_dim = self.dataset.input_dim
-        self.sparsity = sparsity
-
-        self.bottleneck_weight = nn.Linear(self.input_dim, sparsity)
-
-        layers = []
-        # first hidden layer
-        layers.append(nn.Linear(sparsity, hdim))
-        layers.append(nn.ReLU())
-        # intermediate hidden layers
-        for _ in range(hnum - 2):
-            layers.append(nn.Linear(hdim, hdim))
-            layers.append(nn.ReLU())
-        # output layer
-        layers.append(nn.Linear(hdim, 1))
-
-        self.mlp = nn.Sequential(*layers)
+        super().__init__(**kwargs)
+        self.is_refit = False
+        self.use_reg = True
+        self.refit_bottleneck_weight = nn.Linear(self.sparsity, self.sparsity)
 
     def forward(self, X):
         """
         X: torch.Tensor of shape (n_obs, input_dim)
         """
-        X_b = self.bottleneck_weight(X)  # (n_obs, sparsity)
-        return self.mlp(X_b).squeeze(dim=-1)
+        if self.is_refit:
+            X_selected = X[:, self.selected_idx]
+            X_b = self.refit_bottleneck_weight(X_selected)
+        else:
+            X_b = self.bottleneck_weight(X)
+
+        return self.mlp(X_b).squeeze(-1)
+
+    def get_reg_loss(self, X):
+        grad = calc_grad(self, X)  # (n_obs, input_dim)
+        n_obs = X.shape[0]
+        if self.reg_type == "l1":
+            reg = grad.abs().sum() / n_obs
+        elif self.reg_type == "l2":
+            reg = grad.norm(dim=0, p=2).sum() / math.sqrt(n_obs)
+        return self.lambda_reg * reg
 
     def fit(self, **kwargs):
         """
         Fit model to some data.
         """
-        self.loss_history = []
+        self.lambda_min, self.lambda_max, self.n_lambda = kwargs["lambda_min"], kwargs["lambda_max"], kwargs["n_lambda"]
+        self.lambda_vals = np.linspace(self.lambda_min, self.lambda_max, self.n_lambda)
+        self.reg_type = kwargs["reg_type"]
+        self.weight_history = []
+        self.bottleneck_history = []
 
-        self.update_header(**kwargs)
-        n_epochs, batch_size, lr = kwargs["n_epochs"], kwargs["batch_size"], kwargs["lr"]
+        # PART 1: Fit over each lambda in the series
+        for lam in self.lambda_vals:
+            print()
+            print(f"Training with lambda={lam}")
+            self.lambda_reg = lam
+            MLP.fit(self, **kwargs)
+            # calculate gradients on the entire dataset
+            grad = calc_grad(self, self.X_tensor)  # (n_obs, input_dim)
+            weights = grad.abs().mean(dim = 0).detach().numpy() # (input_dim,)
+            self.weight_history.append(weights) 
+            self.bottleneck_history.append(self.bottleneck_weight.weight.abs().mean(axis=0).detach().numpy())  # (input_dim,)
+            
+        self.weight_history = np.array(self.weight_history)
+        self.bottleneck_history = np.array(self.bottleneck_history)
 
-        X_tensor = torch.from_numpy(self.dataset.X).float()
-        y_tensor = torch.from_numpy(self.dataset.y).float()
+        # PART 2: Refit to the smallest lambda which attained the desired sparsity
+        thresh = 1e-3
+        num_nonzero = (self.weight_history > thresh).sum(axis=1)  # (n_lambda,)
+        if num_nonzero[-1] <= self.sparsity:
+            min_lambda_idx = np.min(np.where(num_nonzero <= self.sparsity)[0])
+        else:
+            min_lambda_idx = -1 # keep last one if it didn't sparsify
+        cutoff_wt = self.weight_history[min_lambda_idx]  # (input_dim,)
+        self.selected_idx = np.argsort(cutoff_wt)[-self.sparsity:]  # (sparsity,)
 
-        td = data.TensorDataset(X_tensor, y_tensor)
-        loader = data.DataLoader(td, batch_size=batch_size, shuffle=True)
+        # refit the model using only the selected features and no regularization
+        self.mlp.apply(reset_parameters)
+        self.is_refit = True
+        self.lambda_reg = 0
+        MLP.fit(self, **kwargs)
 
-        criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+    def plot_traces(self):
+        # two-paneled line plot for histories
+        fig = make_subplots(rows=1, cols=2, subplot_titles=("Weight History", "Bottleneck History"))
+        # weight_history: (n_lambda, input_dim)
+        for i in range(self.input_dim):
+            fig.add_trace(
+                go.Scatter(x = self.lambda_vals, y=self.weight_history[:, i], mode="lines", name=self.dataset.feature_names[i]),
+                row=1,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(x = self.lambda_vals, y=self.bottleneck_history[:, i], mode="lines", name=self.dataset.feature_names[i]),
+                row=1,
+                col=2,
+            )
+        fig.update_xaxes(title_text = "Lambda")
+        fig.update_yaxes(title_text = "Weight")
+        fig.update_layout(title_text="Weight and Bottleneck Evolution Over Lambda Sweep")
+        self.save_fig(fig=fig, name="traces")
 
-        for epoch in range(n_epochs):
-            epoch_loss = 0.0
-            for xb, yb in loader:
-                optimizer.zero_grad()
-                preds = self.forward(xb)
-                loss = criterion(preds, yb)
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item() * xb.size(0)
-            avg_loss = epoch_loss / len(td)
-            self.loss_history.append(avg_loss)
-
-        self.visualize()
-        self.save_header()
-
-    def plot_predictions(self):
-        # make a plotly scatterplot of predictions vs ground truth, append to internal list of figures
-        self.eval()
-        with torch.no_grad():
-            X_tensor = torch.from_numpy(self.dataset.X).float()
-            preds = self.forward(X_tensor).cpu().numpy()
-        fig = px.scatter(
-            x=self.dataset.y,
-            y=preds,
-            labels={"x": "Ground Truth", "y": "Predictions"},
-            title="Predictions vs Ground Truth",
-        )
-        
-        self.save_fig(fig = fig, name = "predictions")
-
-    def plot_training(self):
-        # plot training loss over time
-        fig = px.line(
-            y=self.loss_history,
-            labels={"x": "Epoch", "y": "MSE Loss"},
-            title="Training Loss Over Epochs",
-        )
-
-        self.save_fig(fig = fig, name = "training")
+    def plot_weights(self):
+        grad = calc_grad(self, self.X_tensor) # (n_obs, sparsity)
+        avg_grad = grad.abs().mean(dim = 0)[self.selected_idx] # (sparsity,)
+        labels = [self.dataset.feature_names[i] for i in self.selected_idx]
+        fig = go.Figure(data=[go.Bar(x=labels, y=avg_grad.detach().cpu().numpy())])
+        fig.update_layout(title_text="Average Gradient Magnitudes for Selected Features")
+        self.save_fig(fig=fig, name="weights")
 
     def visualize(self):
-        self.plot_predictions()
-        self.plot_training()
+        super().visualize()
+        self.plot_traces()
+        self.plot_weights()

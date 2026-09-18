@@ -31,6 +31,9 @@ def fit_model(**kwargs):
     model = MODELS[model_name](**kwargs)
     # fit model
     model.fit(**kwargs)
+    # save results
+    model.visualize()
+    model.save_header()
 
 def fit_models(**kwargs):
     """

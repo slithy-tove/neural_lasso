@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.utils.data as data
 import plotly.express as px
+import numpy as np
 from models import SparseEstimator
 from data import load_data
 from tqdm import tqdm
@@ -77,19 +78,18 @@ class MLP(SparseEstimator, nn.Module):
             self.loss_history.append(avg_loss)
 
     def plot_predictions(self):
-        # make a plotly scatterplot of predictions vs ground truth, append to internal list of figures
         self.eval()
         with torch.no_grad():
             self.X_tensor = torch.from_numpy(self.dataset.X).float()
             preds = self.forward(self.X_tensor).cpu().numpy()
+        mse = np.mean((preds - self.dataset.y) ** 2)
         fig = px.scatter(
             x=self.dataset.y,
             y=preds,
             labels={"x": "Ground Truth", "y": "Predictions"},
-            title="Predictions vs Ground Truth",
+            title=f"Predictions vs Ground Truth (MSE: {mse:.4f})",
         )
-        
-        self.save_fig(fig = fig, name = "predictions")
+        self.save_fig(fig=fig, name="predictions")
 
     def plot_training(self):
         # plot training loss over time
@@ -98,8 +98,7 @@ class MLP(SparseEstimator, nn.Module):
             labels={"x": "Epoch", "y": "MSE Loss"},
             title="Training Loss Over Epochs",
         )
-
-        self.save_fig(fig = fig, name = "training")
+        self.save_fig(fig=fig, name="training")
 
     def visualize(self):
         self.plot_predictions()

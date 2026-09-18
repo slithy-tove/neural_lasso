@@ -5,6 +5,7 @@ import numpy as np
 import math
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.express as px
 from models import MLP
 from data import load_data
 from .utils import calc_grad, reset_parameters
@@ -98,22 +99,40 @@ class NeuralLasso(MLP):
         MLP.fit(self, **kwargs)
 
     def plot_traces(self):
-        # two-paneled line plot for histories
+        # two-paneled line plot for histories with unified legend and matching colors
         fig = make_subplots(rows=1, cols=2, subplot_titles=("Weight History", "Bottleneck History"))
-        # weight_history: (n_lambda, input_dim)
+        colors = px.colors.qualitative.Plotly
         for i in range(self.input_dim):
+            name = self.dataset.feature_names[i]
+            color = colors[i % len(colors)]
             fig.add_trace(
-                go.Scatter(x = self.lambda_vals, y=self.weight_history[:, i], mode="lines", name=self.dataset.feature_names[i]),
+                go.Scatter(
+                    x=self.lambda_vals,
+                    y=self.weight_history[:, i],
+                    mode="lines",
+                    name=name,
+                    legendgroup=name,
+                    line=dict(color=color),
+                    showlegend=True,
+                ),
                 row=1,
                 col=1,
             )
             fig.add_trace(
-                go.Scatter(x = self.lambda_vals, y=self.bottleneck_history[:, i], mode="lines", name=self.dataset.feature_names[i]),
+                go.Scatter(
+                    x=self.lambda_vals,
+                    y=self.bottleneck_history[:, i],
+                    mode="lines",
+                    name=name,
+                    legendgroup=name,
+                    line=dict(color=color),
+                    showlegend=False,
+                ),
                 row=1,
                 col=2,
             )
-        fig.update_xaxes(title_text = "Lambda")
-        fig.update_yaxes(title_text = "Weight")
+        fig.update_xaxes(title_text="Lambda")
+        fig.update_yaxes(title_text="Weight")
         fig.update_layout(title_text="Weight and Bottleneck Evolution Over Lambda Sweep")
         self.save_fig(fig=fig, name="traces")
 

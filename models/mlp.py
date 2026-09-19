@@ -30,6 +30,7 @@ class MLP(SparseEstimator, nn.Module):
         self.bottleneck_weight = nn.Linear(self.input_dim, self.bottleneck)
 
         layers = []
+        layers.append(nn.ReLU())
         layers.append(nn.Linear(self.bottleneck, hdim))
         layers.append(nn.ReLU())
         for _ in range(hnum - 2):
@@ -60,7 +61,10 @@ class MLP(SparseEstimator, nn.Module):
         n_epochs, batch_size, lr = kwargs["n_epochs"], kwargs["batch_size"], kwargs["lr"]
 
         td = data.TensorDataset(self.X_tensor, self.y_tensor)
-        loader = data.DataLoader(td, batch_size=batch_size, shuffle=True)
+        if batch_size is None:
+            loader = data.DataLoader(td, batch_size=len(td), shuffle=False)
+        else:
+            loader = data.DataLoader(td, batch_size=batch_size, shuffle=True)
 
         criterion = nn.MSELoss()
         optimizer = torch.optim.SGD(self.parameters(), lr=lr)

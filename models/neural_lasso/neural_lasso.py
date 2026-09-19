@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.utils.data as data
 import numpy as np
 import math
+from copy import deepcopy
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
@@ -16,6 +17,7 @@ class NeuralLasso(MLP):
         self.is_refit = False
         self.use_reg = True
         self.refit_bottleneck_weight = nn.Linear(self.bottleneck, self.bottleneck)
+        self.refit_mlp = deepcopy(self.mlp)
         self.spectrum_history = []
 
     def forward(self, X):
@@ -25,10 +27,10 @@ class NeuralLasso(MLP):
         if self.is_refit:
             X_selected = X[:, self.selected_idx]
             X_b = self.refit_bottleneck_weight(X_selected)
+            return self.refit_mlp(X_b).squeeze(-1)
         else:
             X_b = self.bottleneck_weight(X)
-
-        return self.mlp(X_b).squeeze(-1)
+            return self.mlp(X_b).squeeze(-1)
 
     def get_reg_loss(self, X):
         grad = calc_grad(self, X)  # (n_obs, input_dim)
@@ -98,7 +100,6 @@ class NeuralLasso(MLP):
         self.selected_idx = np.argsort(cutoff_wt)[-self.sparsity:]  # (sparsity,)
 
         # refit the model using only the selected features and no regularization
-        self.mlp.apply(reset_parameters)
         self.is_refit = True
         self.lambda_reg = 0
         MLP.fit(self, **kwargs)
@@ -150,16 +151,85 @@ class NeuralLasso(MLP):
         self.save_fig(fig=fig, name="weights")
 
     def plot_spectrum(self):
-        # plot a line plot of how each ordered eigenvalue of the matrix evolves over training
-        fig = go.Figure()
+        # compute additional visualizations
+        X_b = self.bottleneck_weight(self.X_tensor)
+        grads = calc_grad(self.mlp, X_b).detach().cpu().numpy()  # (n_obs, bottleneck)
+        weight_matrix = self.bottleneck_weight.weight.detach().cpu().numpy()  # (bottleneck, input_dim)
+
+        # create subplots: line plot, heatmap, and gradient distributions
+        fig = make_subplots(
+            rows=2,
+            cols=2,
+            subplot_titles=("Gradient Spectrum", "Bottleneck Weights Heatmap", "Gradient Distributions per Bottleneck"),
+            specs=[[{}, {}], [{"type": "xy"}, {"type": "scene"}]]
+        )
+
+        # line plot of eigenvalues over lambda
         for i in range(self.bottleneck):
-            fig.add_trace(go.Scatter(x=self.lambda_vals,
-                                     y=self.spectrum_history[:, i],
-                                     mode="lines",
-                                     name=f"Eigenvalue {i+1}"))
-        fig.update_xaxes(title_text="Lambda")
-        fig.update_yaxes(title_text="Eigenvalue")
-        fig.update_layout(title_text="Gradient Spectrum Evolution Over Lambda Sweep")
+            fig.add_trace(
+                go.Scatter(
+                    x=self.lambda_vals,
+                    y=self.spectrum_history[:, i],
+                    mode="lines",
+                    name=f"Eigenvalue {i+1}"
+                ),
+                row=1,
+                col=1,
+            )
+
+        # heatmap of bottleneck weights
+        fig.add_trace(
+            go.Heatmap(
+                z=weight_matrix,
+                x=self.dataset.feature_names,
+                y=[f"Bottleneck {i}" for i in range(self.bottleneck)],
+                colorscale="Viridis"
+            ),
+            row=1,
+            col=2,
+        )
+
+        # histograms of gradients for each bottleneck neuron
+        for i in range(self.bottleneck):
+            fig.add_trace(
+                go.Histogram(
+                    x=grads[:, i],
+                    name=f"Bottleneck {i}",
+                    nbinsx=30,
+                    opacity=0.75,
+                    showlegend=False
+                ),
+                row=2,
+                col=1,
+            )
+
+        # assert sparsity is 3 and add 3D scatter of gradients
+        assert self.sparsity == 3, "Sparsity must be 3 for 3D scatter plot"
+        fig.add_trace(
+            go.Scatter3d(
+                x=grads[:, 0],
+                y=grads[:, 1],
+                z=grads[:, 2],
+                mode="markers",
+                marker=dict(size=3, opacity=0.7),
+                name="Gradient Point Cloud"
+            ),
+            row=2,
+            col=2,
+        )
+
+        # axis titles
+        fig.update_xaxes(title_text="Lambda", row=1, col=1)
+        fig.update_yaxes(title_text="Eigenvalue", row=1, col=1)
+        fig.update_xaxes(title_text="Input Feature", row=1, col=2)
+        fig.update_yaxes(title_text="Bottleneck", row=1, col=2)
+        fig.update_xaxes(title_text="Gradient Value", row=2, col=1)
+        fig.update_yaxes(title_text="Count", row=2, col=1)
+
+        fig.update_layout(
+            title_text="Gradient Spectrum and Bottleneck Analyses",
+            height=800
+        )
         self.save_fig(fig=fig, name="spectrum")
 
     def visualize(self):

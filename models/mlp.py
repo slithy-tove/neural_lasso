@@ -30,6 +30,7 @@ class MLP(SparseEstimator, nn.Module):
         self.bottleneck_weight = nn.Linear(self.input_dim, self.bottleneck)
 
         layers = []
+        layers.append(nn.ReLU())
         layers.append(nn.Linear(self.bottleneck, hdim))
         layers.append(nn.ReLU())
         for _ in range(hnum - 2):

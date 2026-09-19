@@ -48,7 +48,7 @@ class NeuralLasso(MLP):
         """
         X_b = self.bottleneck_weight(X) # (n_obs, sparsity)
         grads = calc_grad(self.mlp, X_b).detach().numpy() # (n_obs, sparsity)
-        A = np.einsum("ni,nj->nj", grads, grads) # (sparsity, sparsity)
+        A = np.einsum("ni,nj->ij", grads, grads) # (sparsity, sparsity)
         eigvals = np.linalg.eigvalsh(A)  # sorted ascending
         return eigvals
 

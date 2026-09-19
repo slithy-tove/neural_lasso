@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.utils.data as data
 import plotly.express as px
 import numpy as np
+import pandas as pd
 from models import SparseEstimator
 from data import load_data
 from tqdm import tqdm
@@ -18,26 +19,28 @@ class MLP(SparseEstimator, nn.Module):
         self.dataset = load_data(dataset_name)
         self.input_dim = self.dataset.input_dim
         self.sparsity = sparsity
+        if "bottleneck" in kwargs:
+            self.bottleneck = kwargs["bottleneck"] # allow to manually specify bottleneck
+        else:
+            self.bottleneck = sparsity
 
         self.X_tensor = torch.from_numpy(self.dataset.X).float()
         self.y_tensor = torch.from_numpy(self.dataset.y).float()
 
-        self.bottleneck_weight = nn.Linear(self.input_dim, sparsity)
+        self.bottleneck_weight = nn.Linear(self.input_dim, self.bottleneck)
 
         layers = []
-        # first hidden layer
-        layers.append(nn.Linear(sparsity, hdim))
+        layers.append(nn.Linear(self.bottleneck, hdim))
         layers.append(nn.ReLU())
-        # intermediate hidden layers
         for _ in range(hnum - 2):
             layers.append(nn.Linear(hdim, hdim))
             layers.append(nn.ReLU())
-        # output layer
         layers.append(nn.Linear(hdim, 1))
 
         self.loss_history = []
+        self.mse_history = []
+        self.reg_history = []
 
-        # by default, don't regularize
         self.use_reg = False
 
         self.mlp = nn.Sequential(*layers)
@@ -46,7 +49,7 @@ class MLP(SparseEstimator, nn.Module):
         """
         X: torch.Tensor of shape (n_obs, input_dim)
         """
-        X_b = self.bottleneck_weight(X)  # (n_obs, sparsity)
+        X_b = self.bottleneck_weight(X)  # (n_obs, bottleneck)
         return self.mlp(X_b).squeeze(dim=-1)
 
     def fit(self, **kwargs):
@@ -60,22 +63,30 @@ class MLP(SparseEstimator, nn.Module):
         loader = data.DataLoader(td, batch_size=batch_size, shuffle=True)
 
         criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        optimizer = torch.optim.SGD(self.parameters(), lr=lr)
 
         for epoch in tqdm(range(n_epochs)):
             epoch_loss = 0.0
+            epoch_mse = 0.0
+            epoch_reg = 0.0
             for xb, yb in loader:
                 optimizer.zero_grad()
                 preds = self.forward(xb)
-                loss = criterion(preds, yb)
-                if self.use_reg:
-                    reg = self.get_reg_loss(xb)
-                    loss = loss + reg
+                mse = criterion(preds, yb)
+                reg = self.get_reg_loss(xb) if self.use_reg else torch.tensor(0.0, device=mse.device)
+                loss = mse + reg
                 loss.backward()
                 optimizer.step()
-                epoch_loss += loss.item() * xb.size(0)
+                batch_size_cur = xb.size(0)
+                epoch_loss += loss.item() * batch_size_cur
+                epoch_mse += mse.item() * batch_size_cur
+                epoch_reg += reg.item() * batch_size_cur
             avg_loss = epoch_loss / len(td)
+            avg_mse = epoch_mse / len(td)
+            avg_reg = epoch_reg / len(td)
             self.loss_history.append(avg_loss)
+            self.mse_history.append(avg_mse)
+            self.reg_history.append(avg_reg)
 
     def plot_predictions(self):
         self.eval()
@@ -93,9 +104,17 @@ class MLP(SparseEstimator, nn.Module):
 
     def plot_training(self):
         # plot training loss over time
+        epochs = list(range(1, len(self.mse_history) + 1))
+        df = pd.DataFrame({
+            "Epoch": epochs,
+            "MSE": self.mse_history,
+            "Reg": self.reg_history,
+        })
         fig = px.line(
-            y=self.loss_history,
-            labels={"x": "Epoch", "y": "MSE Loss"},
+            df,
+            x="Epoch",
+            y=["MSE", "Reg"],
+            labels={"value": "Loss", "variable": "Component"},
             title="Training Loss Over Epochs",
         )
         self.save_fig(fig=fig, name="training")

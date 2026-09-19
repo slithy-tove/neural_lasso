@@ -15,7 +15,7 @@ class NeuralLasso(MLP):
         super().__init__(**kwargs)
         self.is_refit = False
         self.use_reg = True
-        self.refit_bottleneck_weight = nn.Linear(self.sparsity, self.sparsity)
+        self.refit_bottleneck_weight = nn.Linear(self.bottleneck, self.bottleneck)
         self.spectrum_history = []
 
     def forward(self, X):
@@ -46,9 +46,9 @@ class NeuralLasso(MLP):
         A = \sum_{\ell}h^{(\ell)}(h^{(\ell)})^{T}
         $$
         """
-        X_b = self.bottleneck_weight(X) # (n_obs, sparsity)
-        grads = calc_grad(self.mlp, X_b).detach().numpy() # (n_obs, sparsity)
-        A = np.einsum("ni,nj->ij", grads, grads) # (sparsity, sparsity)
+        X_b = self.bottleneck_weight(X) # (n_obs, bottleneck)
+        grads = calc_grad(self.mlp, X_b).detach().numpy() # (n_obs, bottleneck)
+        A = np.einsum("ni,nj->ij", grads, grads) # (bottleneck, bottleneck)
         eigvals = np.linalg.eigvalsh(A)  # sorted ascending
         return eigvals
 
@@ -62,12 +62,17 @@ class NeuralLasso(MLP):
         self.weight_history = []
         self.bottleneck_history = []
 
+        # fit extra to first lambda
+        start_kwargs = kwargs.copy()
+        start_kwargs["n_epochs"] = 10 * kwargs["n_epochs"]
+
         # PART 1: Fit over each lambda in the series
         for lam in self.lambda_vals:
             print()
             print(f"Training with lambda={lam}")
             self.lambda_reg = lam
-            MLP.fit(self, **kwargs)
+            lam_kwargs = start_kwargs if lam == self.lambda_vals[0] else kwargs
+            MLP.fit(self, **lam_kwargs)
             # record input feature gradients
             grad = calc_grad(self, self.X_tensor)  # (n_obs, input_dim)
             weights = grad.abs().mean(dim = 0).detach().numpy() # (input_dim,)
@@ -147,7 +152,7 @@ class NeuralLasso(MLP):
     def plot_spectrum(self):
         # plot a line plot of how each ordered eigenvalue of the matrix evolves over training
         fig = go.Figure()
-        for i in range(self.sparsity):
+        for i in range(self.bottleneck):
             fig.add_trace(go.Scatter(x=self.lambda_vals,
                                      y=self.spectrum_history[:, i],
                                      mode="lines",

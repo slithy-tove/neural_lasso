@@ -4,7 +4,7 @@ import numpy as np
 kwargs = {"model_name" : ["neural_lasso"],
           "dataset_name" : ["boston"],
           "sparsity" : [3],
-          "n_epochs" : [1],
+          "n_epochs" : [10000],
           "batch_size" : [128],
           "lambda_min" : [0],
           "lambda_max" : [1],

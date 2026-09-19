@@ -48,9 +48,10 @@ class NeuralLasso(MLP):
         A = \sum_{\ell}h^{(\ell)}(h^{(\ell)})^{T}
         $$
         """
+        n_obs = X.shape[0]
         X_b = self.bottleneck_weight(X) # (n_obs, bottleneck)
         grads = calc_grad(self.mlp, X_b).detach().numpy() # (n_obs, bottleneck)
-        A = np.einsum("ni,nj->ij", grads, grads) # (bottleneck, bottleneck)
+        A = np.einsum("ni,nj->ij", grads, grads) / n_obs # (bottleneck, bottleneck)
         eigvals = np.linalg.eigvalsh(A)  # sorted ascending
         return eigvals
 
@@ -230,6 +231,9 @@ class NeuralLasso(MLP):
             title_text="Gradient Spectrum and Bottleneck Analyses",
             height=800
         )
+
+        fig.update_scenes(aspectmode = "data")
+
         self.save_fig(fig=fig, name="spectrum")
 
     def visualize(self):

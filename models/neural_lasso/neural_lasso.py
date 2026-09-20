@@ -34,11 +34,22 @@ class NeuralLasso(MLP):
 
     def get_reg_loss(self, X):
         grad = calc_grad(self, X)  # (n_obs, input_dim)
+        X_b = self.bottleneck_weight(X) # (n_obs, bottleneck)
+        b_grad = calc_grad(self.mlp, X_b) # (n_obs, bottleneck)
         n_obs = X.shape[0]
         if self.reg_type == "l1":
             reg = grad.abs().sum() / n_obs
         elif self.reg_type == "l2":
             reg = grad.norm(dim=0, p=2).sum() / math.sqrt(n_obs)
+        elif self.reg_type == "new1":
+            part1 = self.bottleneck_weight.norm(dim = 1, p = 2).sum()
+            part2 = b_grad.norm(dim = 1).sum()
+            reg = part1 + part2
+         elif self.reg_type == "new2":
+            part1 = self.bottleneck_weight.norm(dim = 1, p = 2).sum()
+            part2 = b_grad.norm(dim = 0).sum()      
+            reg = part1 + part2
+
         return self.lambda_reg * reg
 
     def get_grad_spectrum(self, X):
@@ -66,15 +77,15 @@ class NeuralLasso(MLP):
         self.bottleneck_history = []
 
         # fit extra to first lambda
-        start_kwargs = kwargs.copy()
-        start_kwargs["n_epochs"] = 10 * kwargs["n_epochs"]
+        long_kwargs = kwargs.copy()
+        long_kwargs["n_epochs"] = 10 * kwargs["n_epochs"]
 
         # PART 1: Fit over each lambda in the series
         for lam in self.lambda_vals:
             print()
             print(f"Training with lambda={lam}")
             self.lambda_reg = lam
-            lam_kwargs = start_kwargs if lam == self.lambda_vals[0] else kwargs
+            lam_kwargs = long_kwargs if lam == self.lambda_vals[0] else kwargs
             MLP.fit(self, **lam_kwargs)
             # record input feature gradients
             grad = calc_grad(self, self.X_tensor)  # (n_obs, input_dim)
@@ -103,7 +114,7 @@ class NeuralLasso(MLP):
         # refit the model using only the selected features and no regularization
         self.is_refit = True
         self.lambda_reg = 0
-        MLP.fit(self, **kwargs)
+        MLP.fit(self, **long_kwargs)
 
     def plot_traces(self):
         # two-paneled line plot for histories with unified legend and matching colors
@@ -212,7 +223,7 @@ class NeuralLasso(MLP):
                 y=grads[:, 1],
                 z=grads[:, 2],
                 mode="markers",
-                marker=dict(size=3, opacity=0.7),
+                marker=dict(size=1, opacity=0.1),
                 name="Gradient Point Cloud"
             ),
             row=2,
@@ -229,10 +240,9 @@ class NeuralLasso(MLP):
 
         fig.update_layout(
             title_text="Gradient Spectrum and Bottleneck Analyses",
-            height=800
+            height=800,
+            scene = dict(aspectmode = "data")
         )
-
-        fig.update_scenes(aspectmode = "data")
 
         self.save_fig(fig=fig, name="spectrum")
 

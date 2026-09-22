@@ -55,8 +55,7 @@ resp_var = {
     "Lapatinib": "dose",
 }
 
-
-def load_data(name):
+def local_load_data(name):
     """
     Load a SparseData object with path name + ".csv" and the appropriate features
     """
@@ -64,3 +63,11 @@ def load_data(name):
     response_name = resp_var[name]
     data_path = root_dir / (name + ".csv")
     return SparseData(data_path, input_names, response_name)
+
+LASSONET_NAMES = {"MNIST", "MNIST-Fashion", "MICE", "COIL", "ISOLET", "Activity"}
+def load_data(name):
+    """
+    Load a SparseData object with path name + ".csv" and the appropriate features
+    """
+    if name in LASSONET_NAMES:
+        lassonet_load_data(name)

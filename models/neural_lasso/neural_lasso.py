@@ -42,12 +42,16 @@ class NeuralLasso(MLP):
         elif self.reg_type == "l2":
             reg = grad.norm(dim=0, p=2).sum() / math.sqrt(n_obs)
         elif self.reg_type == "new1":
-            part1 = self.bottleneck_weight.norm(dim = 1, p = 2).sum()
-            part2 = b_grad.norm(dim = 1).sum()
+            part1 = self.bottleneck_weight.weight.norm(dim = 1, p = 2).sum()
+            part2 = b_grad.norm(dim = 1, p = 2).mean()
             reg = part1 + part2
-         elif self.reg_type == "new2":
-            part1 = self.bottleneck_weight.norm(dim = 1, p = 2).sum()
-            part2 = b_grad.norm(dim = 0).sum()      
+        elif self.reg_type == "new2":
+            part1 = self.bottleneck_weight.weight.norm(dim = 1, p = 2).sum()
+            part2 = b_grad.norm(dim = 0, p = 2).sum() / math.sqrt(n_obs)     
+            reg = part1 + part2
+        elif self.reg_type == "p_reg":
+            part1 = self.bottleneck_weight.weight.norm(dim = 1, p = 2).sum()
+            part2 = b_grad.norm(dim = 1, p = self.reg_p).mean()
             reg = part1 + part2
 
         return self.lambda_reg * reg
@@ -79,6 +83,10 @@ class NeuralLasso(MLP):
         # fit extra to first lambda
         long_kwargs = kwargs.copy()
         long_kwargs["n_epochs"] = 10 * kwargs["n_epochs"]
+
+        # add which type of $\ell^{p}$ regularization we are using, if applicable
+        if "reg_p" in kwargs:
+            self.reg_p = kwargs["reg_p"]
 
         # PART 1: Fit over each lambda in the series
         for lam in self.lambda_vals:

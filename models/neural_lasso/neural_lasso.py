@@ -42,15 +42,15 @@ class NeuralLasso(MLP):
         elif self.reg_type == "l2":
             reg = grad.norm(dim=0, p=2).sum() / math.sqrt(n_obs)
         elif self.reg_type == "new1":
-            part1 = self.bottleneck_weight.weight.norm(dim = 1, p = 2).sum()
+            part1 = self.bottleneck_weight.weight.norm(dim = 0, p = 2).sum()
             part2 = b_grad.norm(dim = 1, p = 2).mean()
             reg = part1 + part2
         elif self.reg_type == "new2":
-            part1 = self.bottleneck_weight.weight.norm(dim = 1, p = 2).sum()
+            part1 = self.bottleneck_weight.weight.norm(dim = 0, p = 2).sum()
             part2 = b_grad.norm(dim = 0, p = 2).sum() / math.sqrt(n_obs)     
             reg = part1 + part2
         elif self.reg_type == "p_reg":
-            part1 = self.bottleneck_weight.weight.norm(dim = 1, p = 2).sum()
+            part1 = self.bottleneck_weight.weight.norm(dim = 0, p = 2).sum()
             part2 = b_grad.norm(dim = 1, p = self.reg_p).mean()
             reg = part1 + part2
 

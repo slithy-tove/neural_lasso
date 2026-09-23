@@ -14,18 +14,22 @@ class MLP(SparseEstimator, nn.Module):
         SparseEstimator.__init__(self)
 
         self.update_header(**kwargs)
-        dataset_name, sparsity, hdim, hnum = kwargs["dataset_name"], kwargs["sparsity"], kwargs["hdim"], kwargs["hnum"]
+        dataset_name = kwargs["dataset_name"]
+        sparsity = kwargs["sparsity"]
+        hdim = kwargs["hdim"]
+        hnum = kwargs["hnum"]
 
         self.dataset = load_data(dataset_name)
         self.input_dim = self.dataset.input_dim
         self.sparsity = sparsity
-        if "bottleneck" in kwargs:
-            self.bottleneck = kwargs["bottleneck"] # allow to manually specify bottleneck
-        else:
-            self.bottleneck = sparsity
+        self.ds_type = getattr(self.dataset, "ds_type", "reg")
+        self.bottleneck = kwargs.get("bottleneck", sparsity)
 
-        self.X_tensor = torch.from_numpy(self.dataset.X).float()
-        self.y_tensor = torch.from_numpy(self.dataset.y).float()
+        # tensors for train / test splits
+        self.X_train_tensor = torch.from_numpy(self.dataset.X_train).float()
+        self.y_train_tensor = torch.from_numpy(self.dataset.y_train).float()
+        self.X_test_tensor = torch.from_numpy(self.dataset.X_test).float()
+        self.y_test_tensor = torch.from_numpy(self.dataset.y_test).float()
 
         self.bottleneck_weight = nn.Linear(self.input_dim, self.bottleneck)
 
@@ -36,15 +40,20 @@ class MLP(SparseEstimator, nn.Module):
         for _ in range(hnum - 2):
             layers.append(nn.Linear(hdim, hdim))
             layers.append(nn.ReLU())
-        layers.append(nn.Linear(hdim, 1))
+        out_dim = 1 if self.ds_type == "reg" else self.dataset.n_cls
+        layers.append(nn.Linear(hdim, out_dim))
 
-        self.loss_history = []
-        self.mse_history = []
-        self.reg_history = []
+        self.mlp = nn.Sequential(*layers)
 
         self.use_reg = False
 
-        self.mlp = nn.Sequential(*layers)
+        # histories
+        self.train_loss_history = []
+        self.test_loss_history = []
+        self.train_mse_history = []
+        self.test_mse_history = []
+        self.train_reg_history = []
+        self.test_reg_history = []
 
     def forward(self, X):
         """
@@ -58,45 +67,90 @@ class MLP(SparseEstimator, nn.Module):
         Fit model to some data.
         """
         self.update_header(**kwargs)
-        n_epochs, batch_size, lr = kwargs["n_epochs"], kwargs["batch_size"], kwargs["lr"]
+        n_epochs = kwargs["n_epochs"]
+        batch_size = kwargs["batch_size"]
+        lr = kwargs["lr"]
 
-        td = data.TensorDataset(self.X_tensor, self.y_tensor)
-        if batch_size is None:
-            loader = data.DataLoader(td, batch_size = len(td), shuffle = False)
-        else:
-            loader = data.DataLoader(td, batch_size=batch_size, shuffle=True)
+        train_dataset = data.TensorDataset(self.X_train_tensor, self.y_train_tensor)
+        test_dataset = data.TensorDataset(self.X_test_tensor, self.y_test_tensor)
 
-        criterion = nn.MSELoss()
+        train_loader = data.DataLoader(
+            train_dataset,
+            batch_size=len(train_dataset) if batch_size is None else batch_size,
+            shuffle=True,
+        )
+        test_loader = data.DataLoader(
+            test_dataset,
+            batch_size=len(test_dataset) if batch_size is None else batch_size,
+            shuffle=False,
+        )
+
+        criterion = nn.MSELoss() if self.ds_type == "reg" else nn.CrossEntropyLoss()
         optimizer = torch.optim.SGD(self.parameters(), lr=lr)
 
         for epoch in tqdm(range(n_epochs)):
+            # ---------- training ----------
+            self.train()
             epoch_loss = 0.0
             epoch_mse = 0.0
             epoch_reg = 0.0
-            for xb, yb in loader:
+            for xb, yb in train_loader:
                 optimizer.zero_grad()
                 preds = self.forward(xb)
-                mse = criterion(preds, yb)
-                reg = self.get_reg_loss(xb) if self.use_reg else torch.tensor(0.0, device=mse.device)
-                loss = mse + reg
-                loss.backward()
+                if self.ds_type == "cls":
+                    target = torch.argmax(yb, dim=1)
+                    loss = criterion(preds, target)
+                else:
+                    loss = criterion(preds, yb.squeeze())
+                reg = self.get_reg_loss(xb) if self.use_reg else torch.tensor(0.0, device=loss.device)
+                total_loss = loss + reg
+                total_loss.backward()
                 optimizer.step()
-                batch_size_cur = xb.size(0)
-                epoch_loss += loss.item() * batch_size_cur
-                epoch_mse += mse.item() * batch_size_cur
-                epoch_reg += reg.item() * batch_size_cur
-            avg_loss = epoch_loss / len(td)
-            avg_mse = epoch_mse / len(td)
-            avg_reg = epoch_reg / len(td)
-            self.loss_history.append(avg_loss)
-            self.mse_history.append(avg_mse)
-            self.reg_history.append(avg_reg)
+                batch_sz = xb.size(0)
+                epoch_loss += total_loss.item() * batch_sz
+                if self.ds_type == "reg":
+                    epoch_mse += loss.item() * batch_sz
+                epoch_reg += reg.item() * batch_sz
+            avg_train_loss = epoch_loss / len(train_dataset)
+            avg_train_mse = epoch_mse / len(train_dataset) if self.ds_type == "reg" else None
+            avg_train_reg = epoch_reg / len(train_dataset)
+            self.train_loss_history.append(avg_train_loss)
+            self.train_reg_history.append(avg_train_reg)
+            if self.ds_type == "reg":
+                self.train_mse_history.append(avg_train_mse)
+
+            # ---------- testing ----------
+            self.eval()
+            with torch.no_grad():
+                epoch_loss = 0.0
+                epoch_mse = 0.0
+                epoch_reg = 0.0
+                for xb, yb in test_loader:
+                    preds = self.forward(xb)
+                    if self.ds_type == "cls":
+                        loss = criterion(preds, target)
+                    else:
+                        loss = criterion(preds, yb.squeeze())
+                    reg = self.get_reg_loss(xb) if self.use_reg else torch.tensor(0.0, device=loss.device)
+                    total_loss = loss + reg
+                    batch_sz = xb.size(0)
+                    epoch_loss += total_loss.item() * batch_sz
+                    if self.ds_type == "reg":
+                        epoch_mse += loss.item() * batch_sz
+                    epoch_reg += reg.item() * batch_sz
+                avg_test_loss = epoch_loss / len(test_dataset)
+                avg_test_mse = epoch_mse / len(test_dataset) if self.ds_type == "reg" else None
+                avg_test_reg = epoch_reg / len(test_dataset)
+                self.test_loss_history.append(avg_test_loss)
+                self.test_reg_history.append(avg_test_reg)
+                if self.ds_type == "reg":
+                    self.test_mse_history.append(avg_test_mse)
 
     def plot_predictions(self):
         self.eval()
         with torch.no_grad():
-            self.X_tensor = torch.from_numpy(self.dataset.X).float()
-            preds = self.forward(self.X_tensor).cpu().numpy()
+            X_all = torch.from_numpy(self.dataset.X).float()
+            preds = self.forward(X_all).cpu().numpy()
         mse = np.mean((preds - self.dataset.y) ** 2)
         fig = px.scatter(
             x=self.dataset.y,
@@ -107,19 +161,24 @@ class MLP(SparseEstimator, nn.Module):
         self.save_fig(fig=fig, name="predictions")
 
     def plot_training(self):
-        # plot training loss over time
-        epochs = list(range(1, len(self.mse_history) + 1))
-        df = pd.DataFrame({
+        epochs = list(range(1, len(self.train_loss_history) + 1))
+        data_dict = {
             "Epoch": epochs,
-            "MSE": self.mse_history,
-            "Reg": self.reg_history,
-        })
+            "Train Loss": self.train_loss_history,
+            "Test Loss": self.test_loss_history,
+        }
+        if self.ds_type == "reg":
+            data_dict["Train MSE"] = self.train_mse_history
+            data_dict["Test MSE"] = self.test_mse_history
+        data_dict["Train Reg"] = self.train_reg_history
+        data_dict["Test Reg"] = self.test_reg_history
+        df = pd.DataFrame(data_dict)
         fig = px.line(
             df,
             x="Epoch",
-            y=["MSE", "Reg"],
-            labels={"value": "Loss", "variable": "Component"},
-            title="Training Loss Over Epochs",
+            y=[col for col in df.columns if col != "Epoch"],
+            labels={"value": "Metric", "variable": "Component"},
+            title="Training and Test Metrics Over Epochs",
         )
         self.save_fig(fig=fig, name="training")
 

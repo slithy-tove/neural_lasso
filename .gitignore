@@ -1,1 +1,4 @@
 results/*
+*.npz
+*.png
+*.h5ad

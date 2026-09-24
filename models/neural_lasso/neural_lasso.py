@@ -229,6 +229,7 @@ class NeuralLasso(MLP, SparseEstimator):
         input_grads = grad.abs().mean(dim=0).detach().numpy()  # (input_dim,)
         # record spectrum of gradient matrix
         spectrum = self.get_grad_spectrum(X_train_np)  # (bottleneck,)
+        spectrum /= np.linalg.norm(spectrum, ord = 1) # (normalize to show relative proportions of the eigenvalues)
         # find which variables are nonzero
         thresh = 1e-3
         nonzero = input_grads >= thresh  # (input_dim,)
@@ -262,6 +263,10 @@ class NeuralLasso(MLP, SparseEstimator):
         train_pred = self.refit_mlp(X_train_tensor).detach().cpu().numpy()
         test_pred = self.refit_mlp(X_test_tensor).detach().cpu().numpy()
 
+        # Compute MSE for train and test
+        mse_train = np.mean((train_pred.squeeze() - self.y_train.squeeze()) ** 2)
+        mse_test = np.mean((test_pred.squeeze() - self.y_test.squeeze()) ** 2)
+
         # Plot true vs predicted
         fig = make_subplots(rows=1, cols=2, subplot_titles=("Train", "Test"))
         fig.add_trace(
@@ -279,6 +284,28 @@ class NeuralLasso(MLP, SparseEstimator):
         fig.update_yaxes(title_text="Predicted", row=1, col=1)
         fig.update_yaxes(title_text="Predicted", row=1, col=2)
         fig.update_layout(title_text="Predictions vs Ground Truth")
+
+        # Add MSE annotations atop each subplot
+        fig.add_annotation(
+            x=0.5,
+            y=1.05,
+            xref="x1",
+            yref="y1",
+            text=f"MSE: {mse_train:.4f}",
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+        )
+        fig.add_annotation(
+            x=0.5,
+            y=1.05,
+            xref="x2",
+            yref="y2",
+            text=f"MSE: {mse_test:.4f}",
+            showarrow=False,
+            xanchor="center",
+            yanchor="bottom",
+        )
         self.save_fig(fig=fig, name="predictions")
 
     def plot_training(self):
@@ -452,5 +479,3 @@ class NeuralLasso(MLP, SparseEstimator):
         self.plot_traces()
         self.plot_weights()
         self.plot_spectrum()
-
-# TODO: recalculate MSE on both train and test sets for the prediction plots, and print this MSE atop both plots

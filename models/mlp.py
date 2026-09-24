@@ -1,190 +1,115 @@
 import torch
 import torch.nn as nn
 import torch.utils.data as data
-import plotly.express as px
 import numpy as np
-import pandas as pd
-from models import SparseEstimator
-from data import load_data
 from tqdm import tqdm
+from .utils import HistoryItem
 
-class MLP(SparseEstimator, nn.Module):
-    def __init__(self, **kwargs):
-        nn.Module.__init__(self)
-        SparseEstimator.__init__(self)
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dims, ds_type, n_cls=None):
+        """
+        A generic MLP class with logging and regularization capabilities.
+        Inputs:
+        input_dim: int, dimension of the input data
+        hidden_dims: List[int], the number of neurons in each hidden layer.
+        ds_type: str, "reg" or "cls", whether we are solving a regression or classification problem.
+        n_cls: NoneType or int, how many classes we are classifying to (only required if ds_type == "cls")
+        """
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dims = hidden_dims
+        self.ds_type = ds_type
+        self.n_cls = n_cls
 
-        self.update_header(**kwargs)
-        dataset_name = kwargs["dataset_name"]
-        sparsity = kwargs["sparsity"]
-        hdim = kwargs["hdim"]
-        hnum = kwargs["hnum"]
+        if len(hidden_dims) < 2:
+            raise ValueError("hidden_dims must contain at least two elements")
 
-        self.dataset = load_data(dataset_name)
-        self.input_dim = self.dataset.input_dim
-        self.sparsity = sparsity
-        self.ds_type = getattr(self.dataset, "ds_type", "reg")
-        self.bottleneck = kwargs.get("bottleneck", sparsity)
+        # First layer (input -> first hidden)
+        self.first_layer = nn.Linear(input_dim, hidden_dims[0])
 
-        # tensors for train / test splits
-        self.X_train_tensor = torch.from_numpy(self.dataset.X_train).float()
-        self.y_train_tensor = torch.from_numpy(self.dataset.y_train).float()
-        self.X_test_tensor = torch.from_numpy(self.dataset.X_test).float()
-        self.y_test_tensor = torch.from_numpy(self.dataset.y_test).float()
-
-        self.bottleneck_weight = nn.Linear(self.input_dim, self.bottleneck)
-
-        layers = []
-        layers.append(nn.ReLU())
-        layers.append(nn.Linear(self.bottleneck, hdim))
-        layers.append(nn.ReLU())
-        for _ in range(hnum - 2):
-            layers.append(nn.Linear(hdim, hdim))
-            layers.append(nn.ReLU())
-        out_dim = 1 if self.ds_type == "reg" else self.dataset.n_cls
-        layers.append(nn.Linear(hdim, out_dim))
-
-        self.mlp = nn.Sequential(*layers)
-
-        self.use_reg = False
-
-        # histories
-        self.train_loss_history = []
-        self.test_loss_history = []
-        self.train_mse_history = []
-        self.test_mse_history = []
-        self.train_reg_history = []
-        self.test_reg_history = []
+        # Downstream layers (remaining hidden layers + output)
+        downstream = [nn.ReLU()]
+        prev_dim = hidden_dims[0]
+        for h in hidden_dims[1:]:
+            downstream.append(nn.Linear(prev_dim, h))
+            downstream.append(nn.ReLU())
+            prev_dim = h
+        out_dim = n_cls if ds_type == "cls" else 1
+        downstream.append(nn.Linear(prev_dim, out_dim))
+        self.downstream_layers = nn.Sequential(*downstream)
 
     def forward(self, X):
-        """
-        X: torch.Tensor of shape (n_obs, input_dim)
-        """
-        X_b = self.bottleneck_weight(X)  # (n_obs, bottleneck)
-        return self.mlp(X_b).squeeze(dim=-1)
+        x = self.first_layer(X)
+        y_pred = self.downstream_layers(x)  # (n_obs, out_dim)
+        return y_pred.squeeze(-1)
 
-    def fit(self, **kwargs):
-        """
-        Fit model to some data.
-        """
-        self.update_header(**kwargs)
-        n_epochs = kwargs["n_epochs"]
-        batch_size = kwargs["batch_size"]
-        lr = kwargs["lr"]
-
-        train_dataset = data.TensorDataset(self.X_train_tensor, self.y_train_tensor)
-        test_dataset = data.TensorDataset(self.X_test_tensor, self.y_test_tensor)
-
-        train_loader = data.DataLoader(
-            train_dataset,
-            batch_size=len(train_dataset) if batch_size is None else batch_size,
-            shuffle=True,
+    def _train(self, X_train, y_train, X_test, y_test, optim, batch_size, lr, n_epochs):
+        hist = []
+        # Prepare data
+        X_train_tensor = torch.tensor(np.asarray(X_train), dtype=torch.float32)
+        y_train_tensor = torch.tensor(
+            np.asarray(y_train),
+            dtype=torch.long if self.ds_type == "cls" else torch.float32,
         )
-        test_loader = data.DataLoader(
-            test_dataset,
-            batch_size=len(test_dataset) if batch_size is None else batch_size,
-            shuffle=False,
+        X_test_tensor = torch.tensor(np.asarray(X_test), dtype=torch.float32)
+        y_test_tensor = torch.tensor(
+            np.asarray(y_test),
+            dtype=torch.long if self.ds_type == "cls" else torch.float32,
         )
 
-        criterion = nn.MSELoss() if self.ds_type == "reg" else nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(self.parameters(), lr=lr)
+        if batch_size is None:
+            train_loader = [(X_train_tensor, y_train_tensor)]
+        else:
+            train_dataset = data.TensorDataset(X_train_tensor, y_train_tensor)
+            train_loader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
-        for epoch in tqdm(range(n_epochs)):
-            # ---------- training ----------
+        # Loss function
+        criterion = nn.CrossEntropyLoss() if self.ds_type == "cls" else nn.MSELoss()
+        optimizer = optim(self.parameters(), lr=lr)
+
+        for _ in tqdm(range(n_epochs), desc="Training"):
             self.train()
-            epoch_loss = 0.0
-            epoch_mse = 0.0
-            epoch_reg = 0.0
+            train_crit_sum = 0.0
+            train_reg_sum = 0.0
+            batch_count = 0
             for xb, yb in train_loader:
                 optimizer.zero_grad()
-                preds = self.forward(xb)
-                if self.ds_type == "cls":
-                    target = torch.argmax(yb, dim=1)
-                    loss = criterion(preds, target)
-                else:
-                    loss = criterion(preds, yb.squeeze())
-                reg = self.get_reg_loss(xb) if self.use_reg else torch.tensor(0.0, device=loss.device)
-                total_loss = loss + reg
-                total_loss.backward()
+                preds = self(xb)
+                crit = criterion(preds, yb)
+                reg = self.get_reg_loss(xb)
+                loss = crit + reg
+                loss.backward()
                 optimizer.step()
-                batch_sz = xb.size(0)
-                epoch_loss += total_loss.item() * batch_sz
-                if self.ds_type == "reg":
-                    epoch_mse += loss.item() * batch_sz
-                epoch_reg += reg.item() * batch_sz
-            avg_train_loss = epoch_loss / len(train_dataset)
-            avg_train_mse = epoch_mse / len(train_dataset) if self.ds_type == "reg" else None
-            avg_train_reg = epoch_reg / len(train_dataset)
-            self.train_loss_history.append(avg_train_loss)
-            self.train_reg_history.append(avg_train_reg)
-            if self.ds_type == "reg":
-                self.train_mse_history.append(avg_train_mse)
+                train_crit_sum += crit.item()
+                train_reg_sum += reg.item()
+                batch_count += 1
+            avg_crit = train_crit_sum / batch_count if batch_count else 0.0
+            avg_reg = train_reg_sum / batch_count if batch_count else 0.0
 
-            # ---------- testing ----------
             self.eval()
-            with torch.no_grad():
-                epoch_loss = 0.0
-                epoch_mse = 0.0
-                epoch_reg = 0.0
-                for xb, yb in test_loader:
-                    preds = self.forward(xb)
-                    if self.ds_type == "cls":
-                        loss = criterion(preds, target)
-                    else:
-                        loss = criterion(preds, yb.squeeze())
-                    reg = self.get_reg_loss(xb) if self.use_reg else torch.tensor(0.0, device=loss.device)
-                    total_loss = loss + reg
-                    batch_sz = xb.size(0)
-                    epoch_loss += total_loss.item() * batch_sz
-                    if self.ds_type == "reg":
-                        epoch_mse += loss.item() * batch_sz
-                    epoch_reg += reg.item() * batch_sz
-                avg_test_loss = epoch_loss / len(test_dataset)
-                avg_test_mse = epoch_mse / len(test_dataset) if self.ds_type == "reg" else None
-                avg_test_reg = epoch_reg / len(test_dataset)
-                self.test_loss_history.append(avg_test_loss)
-                self.test_reg_history.append(avg_test_reg)
-                if self.ds_type == "reg":
-                    self.test_mse_history.append(avg_test_mse)
-
-    def plot_predictions(self):
-        self.eval()
-        with torch.no_grad():
-            X_all = torch.from_numpy(self.dataset.X).float()
-            preds = self.forward(X_all).cpu().numpy()
-        mse = np.mean((preds - self.dataset.y) ** 2)
-        fig = px.scatter(
-            x=self.dataset.y,
-            y=preds,
-            labels={"x": "Ground Truth", "y": "Predictions"},
-            title=f"Predictions vs Ground Truth (MSE: {mse:.4f})",
-        )
-        self.save_fig(fig=fig, name="predictions")
-
-    def plot_training(self):
-        epochs = list(range(1, len(self.train_loss_history) + 1))
-        data_dict = {
-            "Epoch": epochs,
-            "Train Loss": self.train_loss_history,
-            "Test Loss": self.test_loss_history,
-        }
-        if self.ds_type == "reg":
-            data_dict["Train MSE"] = self.train_mse_history
-            data_dict["Test MSE"] = self.test_mse_history
-        data_dict["Train Reg"] = self.train_reg_history
-        data_dict["Test Reg"] = self.test_reg_history
-        df = pd.DataFrame(data_dict)
-        fig = px.line(
-            df,
-            x="Epoch",
-            y=[col for col in df.columns if col != "Epoch"],
-            labels={"value": "Metric", "variable": "Component"},
-            title="Training and Test Metrics Over Epochs",
-        )
-        self.save_fig(fig=fig, name="training")
-
-    def visualize(self):
-        self.plot_predictions()
-        self.plot_training()
+            preds_test = self(X_test_tensor)
+            crit_test = criterion(preds_test, y_test_tensor)
+            reg_test = self.get_reg_loss(X_test_tensor)
+            hist.append(
+                self.log(
+                    crit=avg_crit,
+                    crit_test=crit_test.item(),
+                    reg=avg_reg,
+                    reg_test=reg_test.item(),
+                    X_train=X_train_tensor,
+                    X_test=X_test_tensor,
+                )
+            )
+        return hist
 
     def get_reg_loss(self, X):
-        raise NotImplementedError
+        """
+        Calculate the regularization part of the loss function (can be modified in child classes).
+        """
+        return 0.0
+
+    def log(self, crit, crit_test, reg, reg_test, X_train=None, X_test=None):
+        """
+        Log information relevant to the model at this epoch (can be modified in child classes).
+        """
+        return None

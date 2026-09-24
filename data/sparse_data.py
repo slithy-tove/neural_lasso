@@ -44,5 +44,5 @@ class SparseData:
             self.y_test = np.vectorize(class_to_idx.get)(y_test_flat)
             self.n_cls = len(unique_classes)
 
-        self.feature_names = np.array(input_names)
+        self.feature_names = np.array(input_names).ravel()
         self.input_dim = self.X_train.shape[1]

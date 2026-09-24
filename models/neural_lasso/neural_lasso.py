@@ -10,6 +10,7 @@ from models import MLP, SparseEstimator
 from models.utils import HistoryItem
 from data import load_data
 
+
 class NeuralLasso(MLP, SparseEstimator):
     def __init__(
         self,
@@ -75,18 +76,16 @@ class NeuralLasso(MLP, SparseEstimator):
         n_obs = X.shape[0]
         if self.reg_type == "l1":
             reg = grad.abs().sum() / n_obs
-        elif self.reg_type == "l2":
-            reg = grad.norm(dim=0, p=2).sum() / math.sqrt(n_obs)
-        elif self.reg_type == "new1":
+        elif self.reg_type == "group":
             part1 = self.first_layer.weight.norm(dim=0, p=2).sum()
             part2 = b_grad.norm(dim=1, p=2).mean()
             reg = part1 + part2
-        elif self.reg_type == "new2":
-            part1 = self.first_layer.weight.norm(dim=0, p=2).sum()
-            part2 = b_grad.norm(dim=0, p=2).sum() / math.sqrt(n_obs)
+        elif self.reg_type == "group_squared":
+            part1 = (self.first_layer.weight.norm(dim=0, p=2).sum()) ** 2
+            part2 = (b_grad ** 2).mean(dim = 0).sum()
             reg = part1 + part2
         else:
-            reg = 0.0
+            reg = torch.tensor(0.0)
         return self.lambda_reg * reg
 
     def get_grad_spectrum(self, X):
@@ -123,10 +122,10 @@ class NeuralLasso(MLP, SparseEstimator):
         Fit model to some data.
         """
         self.lambda_min, self.lambda_max, self.n_lambda = lambda_min, lambda_max, n_lambda
-        self.lambda_vals = np.linspace(self.lambda_min, self.lambda_max, self.n_lambda)
+        lambda_vals = np.linspace(self.lambda_min, self.lambda_max, self.n_lambda)
         self.reg_type = reg_type
 
-        optim = torch.optim.SGD
+        optim = torch.optim.Adam
 
         # Update header with all of these new parameters above
         self.update_header(
@@ -142,7 +141,8 @@ class NeuralLasso(MLP, SparseEstimator):
 
         # PART 0: Fit with no regularization to initialize parameters
         self.lambda_reg = 0
-        self.hist = self._train(
+        self.hist = []  # list of lists
+        self.hist.append(self._train(
             X_train=self.X_train,
             y_train=self.y_train,
             X_test=self.X_test,
@@ -151,14 +151,14 @@ class NeuralLasso(MLP, SparseEstimator):
             optim=optim,
             batch_size=batch_size,
             n_epochs=init_epochs,
-        )
+        ))
 
         # PART 1: Fit over each lambda in the series
-        for lam in self.lambda_vals:
+        for lam in lambda_vals:
             print()
             print(f"Training with lambda={lam}")
             self.lambda_reg = lam
-            self.hist = self._train(
+            self.hist.append(self._train(
                 X_train=self.X_train,
                 y_train=self.y_train,
                 X_test=self.X_test,
@@ -167,14 +167,24 @@ class NeuralLasso(MLP, SparseEstimator):
                 optim=optim,
                 batch_size=batch_size,
                 n_epochs=path_epochs,
-            )
+            ))
+
+        # Flatten history and record lambda change points
+        flat_hist = []
+        self.lambda_change_points = []  # indices where a new lambda segment starts
+        self.lambda_values = [0] + list(lambda_vals)
+        for segment in self.hist:
+            self.lambda_change_points.append(len(flat_hist))
+            flat_hist.extend(segment)
+        self.hist = flat_hist
+        self.n_hist = len(self.hist)
 
         # PART 2: Refit to selected `sparsity` features
         nonzero_hist = np.array([hi.nonzero for hi in self.hist])  # (n_epochs, input_dim)
         n_nonzero = nonzero_hist.sum(axis=1)  # (n_epochs,)
         self.sparsified_ok = True
         if (n_nonzero == self.sparsity).any():
-            first_idx = np.where(n_nonzero == self.sparsity)[0][0]
+            first_idx = np.where(n_nonzero == self.sparsity)[0][0]  # first regularization value for which we attain the desired sparsity
             self.selected_idx = np.where(nonzero_hist[first_idx])[0]  # (sparsity,)
 
             self.X_train_sub = self.X_train[:, self.selected_idx]
@@ -226,6 +236,7 @@ class NeuralLasso(MLP, SparseEstimator):
         bottleneck_weights = self.first_layer.weight.norm(dim=0, p=2).detach().numpy()  # (bottleneck,)
 
         return HistoryItem(
+            lambda_reg = self.lambda_reg,
             input_grads=input_grads,
             crit=crit,
             crit_test=crit_test,
@@ -251,36 +262,22 @@ class NeuralLasso(MLP, SparseEstimator):
         train_pred = self.refit_mlp(X_train_tensor).detach().cpu().numpy()
         test_pred = self.refit_mlp(X_test_tensor).detach().cpu().numpy()
 
-        # Ground truth
-        y_train = self.y_train
-        y_test = self.y_test
-
-        # Plot
+        # Plot true vs predicted
         fig = make_subplots(rows=1, cols=2, subplot_titles=("Train", "Test"))
         fig.add_trace(
-            go.Scatter(x=np.arange(len(y_train)), y=y_train, mode="markers", name="True"),
+            go.Scatter(x=self.y_train, y=train_pred, mode="markers", name="Train"),
             row=1,
             col=1,
         )
         fig.add_trace(
-            go.Scatter(x=np.arange(len(train_pred)), y=train_pred, mode="lines", name="Pred"),
-            row=1,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(x=np.arange(len(y_test)), y=y_test, mode="markers", name="True"),
+            go.Scatter(x=self.y_test, y=test_pred, mode="markers", name="Test"),
             row=1,
             col=2,
         )
-        fig.add_trace(
-            go.Scatter(x=np.arange(len(test_pred)), y=test_pred, mode="lines", name="Pred"),
-            row=1,
-            col=2,
-        )
-        fig.update_xaxes(title_text="Sample Index", row=1, col=1)
-        fig.update_xaxes(title_text="Sample Index", row=1, col=2)
-        fig.update_yaxes(title_text="Target", row=1, col=1)
-        fig.update_yaxes(title_text="Target", row=1, col=2)
+        fig.update_xaxes(title_text="True", row=1, col=1)
+        fig.update_xaxes(title_text="True", row=1, col=2)
+        fig.update_yaxes(title_text="Predicted", row=1, col=1)
+        fig.update_yaxes(title_text="Predicted", row=1, col=2)
         fig.update_layout(title_text="Predictions vs Ground Truth")
         self.save_fig(fig=fig, name="predictions")
 
@@ -295,14 +292,37 @@ class NeuralLasso(MLP, SparseEstimator):
         reg_test = np.array([h.reg_test for h in self.hist])
 
         fig = make_subplots(rows=2, cols=1, subplot_titles=("Criterion Loss", "Regularization Loss"))
-        fig.add_trace(go.Scatter(x=self.lambda_vals, y=crit, mode="lines", name="Train Crit"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=self.lambda_vals, y=crit_test, mode="lines", name="Test Crit"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=self.lambda_vals, y=reg, mode="lines", name="Train Reg"), row=2, col=1)
-        fig.add_trace(go.Scatter(x=self.lambda_vals, y=reg_test, mode="lines", name="Test Reg"), row=2, col=1)
-        fig.update_xaxes(title_text="Lambda", row=1, col=1)
-        fig.update_xaxes(title_text="Lambda", row=2, col=1)
+        fig.add_trace(go.Scatter(x=np.arange(self.n_hist), y=crit, mode="lines", name="Train Crit"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=np.arange(self.n_hist), y=crit_test, mode="lines", name="Test Crit"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=np.arange(self.n_hist), y=reg, mode="lines", name="Train Reg"), row=2, col=1)
+        fig.add_trace(go.Scatter(x=np.arange(self.n_hist), y=reg_test, mode="lines", name="Test Reg"), row=2, col=1)
+        fig.update_xaxes(title_text="Iteration", row=1, col=1)
+        fig.update_xaxes(title_text="Iteration", row=2, col=1)
         fig.update_yaxes(title_text="Loss", row=1, col=1)
         fig.update_yaxes(title_text="Loss", row=2, col=1)
+
+        # Add vertical dotted lines for lambda changes
+        for idx, lam in zip(self.lambda_change_points, self.lambda_values):
+            fig.add_shape(
+                type="line",
+                x0=idx,
+                x1=idx,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(dash="dot", color="gray")
+            )
+            fig.add_annotation(
+                x=idx,
+                y=1,
+                yref="paper",
+                text=f"λ={lam:.3g}",
+                showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
+                font=dict(color="gray")
+            )
+
         fig.update_layout(title_text="Training and Test Losses Across Lambda Sweep")
         self.save_fig(fig=fig, name="training")
 
@@ -319,7 +339,7 @@ class NeuralLasso(MLP, SparseEstimator):
             color = colors[i % len(colors)]
             fig.add_trace(
                 go.Scatter(
-                    x=self.lambda_vals,
+                    x=np.arange(self.n_hist),
                     y=weight_history[:, i],
                     mode="lines",
                     name=name,
@@ -330,11 +350,10 @@ class NeuralLasso(MLP, SparseEstimator):
                 row=1,
                 col=1,
             )
-            # Only plot bottleneck history if it has enough dimensions
             if bottleneck_history.shape[1] > i:
                 fig.add_trace(
                     go.Scatter(
-                        x=self.lambda_vals,
+                        x=np.arange(self.n_hist),
                         y=bottleneck_history[:, i],
                         mode="lines",
                         name=name,
@@ -345,9 +364,32 @@ class NeuralLasso(MLP, SparseEstimator):
                     row=1,
                     col=2,
                 )
-        fig.update_xaxes(title_text="Lambda")
+        fig.update_xaxes(title_text="Iteration")
         fig.update_yaxes(title_text="Weight")
         fig.update_layout(title_text="Weight and Bottleneck Evolution Over Lambda Sweep")
+
+        # Add vertical dotted lines for lambda changes
+        for idx, lam in zip(self.lambda_change_points, self.lambda_values):
+            fig.add_shape(
+                type="line",
+                x0=idx,
+                x1=idx,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(dash="dot", color="gray")
+            )
+            fig.add_annotation(
+                x=idx,
+                y=1,
+                yref="paper",
+                text=f"λ={lam:.3g}",
+                showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
+                font=dict(color="gray")
+            )
+
         self.save_fig(fig=fig, name="traces")
 
     def plot_weights(self):
@@ -368,7 +410,7 @@ class NeuralLasso(MLP, SparseEstimator):
         for idx in range(spectrum_history.shape[1]):
             fig.add_trace(
                 go.Scatter(
-                    x=self.lambda_vals,
+                    x=np.arange(self.n_hist),
                     y=spectrum_history[:, idx],
                     mode="lines",
                     name=f"Eigenvalue {idx+1}",
@@ -376,9 +418,32 @@ class NeuralLasso(MLP, SparseEstimator):
             )
         fig.update_layout(
             title_text="Gradient Spectrum Evolution Across Lambda Sweep",
-            xaxis_title="Lambda",
+            xaxis_title="Iteration",
             yaxis_title="Eigenvalue",
         )
+
+        # Add vertical dotted lines for lambda changes
+        for idx, lam in zip(self.lambda_change_points, self.lambda_values):
+            fig.add_shape(
+                type="line",
+                x0=idx,
+                x1=idx,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(dash="dot", color="gray")
+            )
+            fig.add_annotation(
+                x=idx,
+                y=1,
+                yref="paper",
+                text=f"λ={lam:.3g}",
+                showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
+                font=dict(color="gray")
+            )
+
         self.save_fig(fig=fig, name="spectrum")
 
     def visualize(self):

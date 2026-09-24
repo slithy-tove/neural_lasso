@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class HistoryItem:
+    lambda_reg: float = None
     input_grads: np.ndarray = None
     crit: float = None
     reg: float = None

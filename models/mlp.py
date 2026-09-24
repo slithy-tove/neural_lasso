@@ -6,7 +6,7 @@ from tqdm import tqdm
 from .utils import HistoryItem
 
 class MLP(nn.Module):
-    def __init__(self, input_dim, hidden_dims, ds_type, n_cls=None):
+    def __init__(self, input_dim, hidden_dims, ds_type, n_cls=None, n_save=100):
         """
         A generic MLP class with logging and regularization capabilities.
         Inputs:
@@ -14,12 +14,14 @@ class MLP(nn.Module):
         hidden_dims: List[int], the number of neurons in each hidden layer.
         ds_type: str, "reg" or "cls", whether we are solving a regression or classification problem.
         n_cls: NoneType or int, how many classes we are classifying to (only required if ds_type == "cls")
+        n_save: int, number of HistoryItems to save during training (default 10)
         """
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         self.ds_type = ds_type
         self.n_cls = n_cls
+        self.n_save = n_save
 
         if len(hidden_dims) < 2:
             raise ValueError("hidden_dims must contain at least two elements")
@@ -44,7 +46,6 @@ class MLP(nn.Module):
         return y_pred.squeeze(-1)
 
     def _train(self, X_train, y_train, X_test, y_test, optim, batch_size, lr, n_epochs):
-        hist = []
         # Prepare data
         X_train_tensor = torch.tensor(np.asarray(X_train), dtype=torch.float32)
         y_train_tensor = torch.tensor(
@@ -67,7 +68,11 @@ class MLP(nn.Module):
         criterion = nn.CrossEntropyLoss() if self.ds_type == "cls" else nn.MSELoss()
         optimizer = optim(self.parameters(), lr=lr)
 
-        for _ in tqdm(range(n_epochs), desc="Training"):
+        # Determine epochs at which to log history items
+        save_epochs = set(np.linspace(0, n_epochs - 1, self.n_save, dtype=int))
+
+        history = []
+        for epoch_idx in tqdm(range(n_epochs), desc="Training"):
             self.train()
             train_crit_sum = 0.0
             train_reg_sum = 0.0
@@ -90,23 +95,25 @@ class MLP(nn.Module):
             preds_test = self(X_test_tensor)
             crit_test = criterion(preds_test, y_test_tensor)
             reg_test = self.get_reg_loss(X_test_tensor)
-            hist.append(
-                self.log(
-                    crit=avg_crit,
-                    crit_test=crit_test.item(),
-                    reg=avg_reg,
-                    reg_test=reg_test.item(),
-                    X_train=X_train_tensor,
-                    X_test=X_test_tensor,
+
+            if epoch_idx in save_epochs:
+                history.append(
+                    self.log(
+                        crit=avg_crit,
+                        crit_test=crit_test.item(),
+                        reg=avg_reg,
+                        reg_test=reg_test.item(),
+                        X_train=X_train_tensor,
+                        X_test=X_test_tensor,
+                    )
                 )
-            )
-        return hist
+        return history
 
     def get_reg_loss(self, X):
         """
         Calculate the regularization part of the loss function (can be modified in child classes).
         """
-        return 0.0
+        return torch.tensor(0.0)
 
     def log(self, crit, crit_test, reg, reg_test, X_train=None, X_test=None):
         """

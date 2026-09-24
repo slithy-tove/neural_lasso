@@ -20,7 +20,7 @@ from sklearn.base import (
 from sklearn.model_selection import check_cv, train_test_split
 from tqdm import tqdm
 
-from lassonet.utils import selection_probability
+from .utils import selection_probability
 
 from .cox import CoxPHLoss, concordance_index
 from .model import LassoNet

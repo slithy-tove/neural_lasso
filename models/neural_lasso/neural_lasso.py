@@ -83,7 +83,7 @@ class NeuralLasso(MLP, SparseEstimator):
         n_obs = X.shape[0]
         #if self.reg_type == "l1":
         #    reg = grad.abs().sum() / n_obs
-        elif self.reg_type == "group":
+        if self.reg_type == "group":
             part1 = self.first_layer.weight.norm(dim=0, p=2).sum()
             part2 = b_grad.norm(dim=1, p=2).mean()
             reg = part1 + part2

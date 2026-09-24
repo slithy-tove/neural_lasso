@@ -1,3 +1,4 @@
+import time
 import torch
 import torch.nn as nn
 import torch.utils.data as data
@@ -59,23 +60,29 @@ class NeuralLasso(MLP, SparseEstimator):
             n_cls=self.n_cls,
         )
 
+        # Time trackers
+        self.fit_time = 0.0
+        self.grad_calc_time = 0.0
+
     def calc_grad(self, model, X):
         """
         Calculate the gradients of a model with respect to its input X.
         """
+        start = time.time()
         X = X.detach().clone() if isinstance(X, torch.Tensor) else torch.as_tensor(X).float()
         X.requires_grad_()
         y_pred = model(X)
         grads, = torch.autograd.grad(y_pred.sum(), X, create_graph=True)  # same shape as X
+        self.grad_calc_time += time.time() - start
         return grads
 
     def get_reg_loss(self, X):
-        grad = self.calc_grad(self, X)  # (n_obs, input_dim)
+        #grad = self.calc_grad(self, X)  # (n_obs, input_dim)
         X_b = self.first_layer(X)  # (n_obs, bottleneck)
         b_grad = self.calc_grad(self.downstream_layers, X_b)  # (n_obs, bottleneck)
         n_obs = X.shape[0]
-        if self.reg_type == "l1":
-            reg = grad.abs().sum() / n_obs
+        #if self.reg_type == "l1":
+        #    reg = grad.abs().sum() / n_obs
         elif self.reg_type == "group":
             part1 = self.first_layer.weight.norm(dim=0, p=2).sum()
             part2 = b_grad.norm(dim=1, p=2).mean()
@@ -142,6 +149,7 @@ class NeuralLasso(MLP, SparseEstimator):
         # PART 0: Fit with no regularization to initialize parameters
         self.lambda_reg = 0
         self.hist = []  # list of lists
+        start_fit = time.time()
         self.hist.append(self._train(
             X_train=self.X_train,
             y_train=self.y_train,
@@ -168,6 +176,7 @@ class NeuralLasso(MLP, SparseEstimator):
                 batch_size=batch_size,
                 n_epochs=path_epochs,
             ))
+        self.fit_time += time.time() - start_fit
 
         # Flatten history and record lambda change points
         flat_hist = []
@@ -349,6 +358,18 @@ class NeuralLasso(MLP, SparseEstimator):
                 yanchor="bottom",
                 font=dict(color="gray")
             )
+
+        # Add annotation with timing information
+        fig.add_annotation(
+            x=0.5,
+            y=1.12,
+            xref="paper",
+            yref="paper",
+            text=f"Fit time: {self.fit_time:.2f}s, Grad calc time: {self.grad_calc_time:.2f}s",
+            showarrow=False,
+            xanchor="center",
+            font=dict(size=12, color="black")
+        )
 
         fig.update_layout(title_text="Training and Test Losses Across Lambda Sweep")
         self.save_fig(fig=fig, name="training")

@@ -452,3 +452,5 @@ class NeuralLasso(MLP, SparseEstimator):
         self.plot_traces()
         self.plot_weights()
         self.plot_spectrum()
+
+# TODO: recalculate MSE on both train and test sets for the prediction plots, and print this MSE atop both plots

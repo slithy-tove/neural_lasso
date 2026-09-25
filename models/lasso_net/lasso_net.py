@@ -189,7 +189,7 @@ class LassoNet(SparseEstimator):
         """
         lambda_range = np.array([hi.lambda_ for hi in self.hist])
         weight_history = np.array([hi.state_dict["skip.weight"] for hi in self.hist])  # (n_hist, 1, input_dim)
-        weight_history = weight_history[:, 0, :] # (n_hist, input_dim)
+        weight_history = weight_history.reshape(-1, self.input_dim) # (n_hist, input_dim)
 
         fig = go.Figure()
         for i in range(weight_history.shape[1]):

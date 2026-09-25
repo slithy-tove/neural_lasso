@@ -78,12 +78,14 @@ class NeuralLasso(MLP, SparseEstimator):
         return grads
 
     def get_reg_loss(self, X):
-        #grad = self.calc_grad(self, X)  # (n_obs, input_dim)
+        grad = self.calc_grad(self, X)  # (n_obs, input_dim)
         X_b = self.first_layer(X)  # (n_obs, bottleneck)
         b_grad = self.calc_grad(self.downstream_layers, X_b)  # (n_obs, bottleneck)
         n_obs = X.shape[0]
-        #if self.reg_type == "l1":
-        #    reg = grad.abs().sum() / n_obs
+        if self.reg_type == "l1":
+            reg = grad.abs().sum() / n_obs
+        elif self.reg_type == "l2":
+            reg = grad.norm(dim = 0, p = 2).sum() / math.sqrt(n_obs)
         if self.reg_type == "group":
             part1 = self.first_layer.weight.norm(dim=0, p=2).sum()
             part2 = b_grad.norm(dim=1, p=2).mean()

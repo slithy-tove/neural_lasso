@@ -1,10 +1,11 @@
 import itertools
-from models import MLP, NeuralLasso
+from models import MLP, NeuralLasso, LassoNet
 from data import load_data
 from time import time
 
 MODELS = {"mlp" : MLP,
-          "neural_lasso" : NeuralLasso}
+          "neural_lasso" : NeuralLasso,
+          "lasso_net" : LassoNet}
 
 def make_iter(**kwargs):
     """

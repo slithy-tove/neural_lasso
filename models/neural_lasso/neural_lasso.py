@@ -30,7 +30,8 @@ class NeuralLasso(MLP, SparseEstimator):
         self.input_dim = self.dataset.input_dim
         self.n_cls = getattr(self.dataset, "n_cls", None)
 
-        params = {"dataset_name": dataset_name,
+        params = {"model_name" : "neural_lasso",
+                  "dataset_name": dataset_name,
                   "sparsity": sparsity,
                   "hdim": hdim,
                   "hnum": hnum,
